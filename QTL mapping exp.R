@@ -1,0 +1,132 @@
+setwd("C:/Users/HP/OneDrive/Desktop/mapping_example-main")
+library(devtools)
+library(mappoly)
+library(qtlpoly)
+library(viewpoly)
+dat = read_geno_csv(file="C:/Users/HP/OneDrive/Desktop/mapping_example-main/data/BExMG_subset_with_contaminants_2075mrks.csv", 
+                    ploidy = 4, filter.non.conforming = F)
+library(polymapR)
+polymapR_dosage_matrix=export_data_to_polymapR(dat)
+
+PCA_progeny(polymapR_dosage_matrix)
+contaminants = c("X16009_N001", "X16009_N010","SW","X16009_N005","X16009_N006","X16009_N009")
+
+
+screened_data <- screen_for_duplicate_individuals(dosage_matrix = ALL_dosages, 
+                                                  cutoff = 0.95, 
+                                                  plot_cor = T)
+duplicates =  c("X16035_N028.1", "X16035_N029.1","X16400_N023","X16400_N038","X16405_N113","X16400_N006")
+
+remove = c(contaminants,duplicates)
+genotype_data = read.csv("C:/Users/HP/OneDrive/Desktop/mapping_example-main/data/BExMG_subset_with_contaminants_2075mrks.csv")
+genotype_data_after_QC=genotype_data[,which(!colnames(genotype_data)%in%remove)]
+write.csv(genotype_data_after_QC,"C:/Users/HP/OneDrive/Desktop/mapping_example-main/data/BExMG_subset_with_contaminants_2075mrks_afterQC.csv", row.names = F)
+library(mappoly)
+dat = read_geno_csv(file="C:/Users/HP/OneDrive/Desktop/mapping_example-main/data/BExMG_subset_with_contaminants_2075mrks_afterQC.csv", ploidy = 4, filter.non.conforming = T)
+dat = filter_missing(input.data = dat, type = "marker", 
+                     filter.thres = 0.10, inter = F)
+
+## Filtering dataset by individual
+dat = filter_missing(input.data = dat, type = "individual", 
+                     filter.thres = 0.10, inter = F)
+dat
+pval.bonf = 0.05/dat$n.mrk
+mrks.chi.filt = filter_segregation(dat, chisq.pval.thres =  pval.bonf, inter = F)
+seq.init = make_seq_mappoly(mrks.chi.filt)
+seq.init
+plot(seq.init)
+all.rf.pairwise = est_pairwise_rf(input.seq = seq.init, ncpus = 7)
+mat = rf_list_to_matrix(all.rf.pairwise)
+plot(mat)
+grs = group_mappoly(input.mat = mat,
+                    expected.groups = 7,
+                    comp.mat = TRUE, 
+                    inter = F)
+grs
+plot(grs)
+LGS.inter=vector("list", 7)
+for(j in 1:7){
+  temp1 = make_seq_mappoly(grs, j, genomic.info=1)
+  tpt = make_pairs_mappoly(all.rf.pairwise, input.seq = temp1)
+  temp2 = rf_snp_filter(input.twopt = tpt, diagnostic.plot = FALSE)
+  tpt2 = make_pairs_mappoly(tpt, input.seq = temp2)
+  LGS.inter[[as.numeric(names(table(temp2$chrom))[which.max(table(temp2$chrom))])]] = list(seq = temp2, tpt = tpt2)
+}
+LGS.genomic = vector("list", 7)
+for (i in 1:7){
+  tempseq1 = make_seq_mappoly(dat, arg = paste0("seq",i), genomic.info = 1)
+  mrks = intersect(tempseq1$seq.mrk.names, seq.init$seq.mrk.names)
+  tempseq = make_seq_mappoly(dat, arg = mrks)
+  temptpt = make_pairs_mappoly(all.rf.pairwise, input.seq = tempseq)
+  rffilt = rf_snp_filter(input.twopt = temptpt, diagnostic.plot = FALSE)
+  temptpt2 = make_pairs_mappoly(temptpt, input.seq = rffilt)
+  LGS.genomic[[as.numeric(unique(rffilt$chrom))]] = list(seq = rffilt, tpt = temptpt2)
+}
+LGS.upgma=vector("list", 7)
+for(j in 1:7){
+  temp1 = make_seq_mappoly(grs, j)
+  tpt = make_pairs_mappoly(all.rf.pairwise, input.seq = temp1)
+  temp2 = rf_snp_filter(input.twopt = tpt, diagnostic.plot = FALSE)
+  tpt2 = make_pairs_mappoly(tpt, input.seq = temp2)
+  LGS.upgma[[as.numeric(names(table(temp2$chrom))[which.max(table(temp2$chrom))])]] = list(seq = temp2, tpt = tpt2)
+}
+comp = data.frame(UPGMA_Genomic = unlist(lapply(LGS.inter, function(x) length(x$seq$seq.num))),
+                  Genomic = unlist(lapply(LGS.genomic, function(x) length(x$seq$seq.num))),
+                  UPGMA = unlist(lapply(LGS.upgma, function(x) length(x$seq$seq.num))))
+comp
+LGS<-LGS.inter
+single_chrom <- est_rf_hmm_sequential(input.seq = LGS[[1]]$seq,
+                                      start.set = 3,
+                                      thres.twopt = 10,
+                                      thres.hmm = 50,
+                                      extend.tail = 30,
+                                      twopt = LGS[[1]]$tpt,
+                                      verbose = TRUE,
+                                      phase.number.limit = 20,
+                                      sub.map.size.diff.limit = 5)
+plot(single_chrom)
+######I faced error form this code######
+phasing_and_hmm_rf <- function(X){
+  fl <- paste0("output_map_ch_", unique(X$seq$chrom), ".txt")
+  sink(fl)
+  map <- est_rf_hmm_sequential(input.seq = X$seq,
+                               start.set = 3,
+                               thres.twopt = 10,
+                               thres.hmm = 50,
+                               extend.tail = 30,
+                               twopt = X$tpt,
+                               verbose = TRUE,
+                               phase.number.limit = 20,
+                               sub.map.size.diff.limit = 5) 
+  sink()
+  return(map)
+}
+
+my.error.func<-function(X){
+  x<-est_full_hmm_with_global_error(input.map = X, 
+                                    error = 0.05, 
+                                    tol = 10e-4, 
+                                    verbose = FALSE)
+  return(x)
+}
+
+ptm <- proc.time()
+cl <- parallel::makeCluster(7)
+parallel::clusterEvalQ(cl, require(mappoly))
+parallel::clusterExport(cl, "dat")
+MAPs <- parallel::parLapply(cl,LGS, phasing_and_hmm_rf)
+parallel::stopCluster(cl)
+
+
+# account for error
+cl <- parallel::makeCluster(7)
+parallel::clusterEvalQ(cl, require(mappoly))
+parallel::clusterExport(cl, "dat")
+MAPs.err <- parallel::parLapply(cl,MAPs,my.error.func)
+parallel::stopCluster(cl)
+
+par(mfrow=c(2,1))
+plot_map_list(MAPs, col = "ggstyle")
+plot_map_list(MAPs.err, col = "ggstyle")
+load("C:/Users/HP/OneDrive/Desktop/mapping_example-main/MAPs.err.RData")
+summary_maps(MAPS.err)
